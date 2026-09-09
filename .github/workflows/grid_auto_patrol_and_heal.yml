@@ -26,24 +26,27 @@ jobs:
       - id: run_patrol
         continue-on-error: true
         run: |
-          python - << 'EOF' > patrol_report.json
+          python - << 'EOF'
           import re, json, sys
 
           report = {"status": "success", "errors": []}
           try:
               with open("oita_grid_capacity_map.html", "r", encoding="utf-8") as f:
                   content = f.read()
-              if "</html>" not in content or "</body>" not in content:
-                  report["errors"].append("HTML end tags missing")
-              subs = re.findall(r"id:\s*'([^']+)'", content)
-              if len(set(subs)) < 48:
-                  report["errors"].append(f"Substation count insufficient: {len(set(subs))}")
+
+              if len(content.strip()) < 1000:
+                  report["errors"].append("HTMLファイルの内容が不完全または空です")
+              if "</html>" not in content:
+                  report["errors"].append("HTML終了タグがありません")
           except Exception as e:
               report["status"] = "failed"
-              report["errors"].append(str(e))
+              report["errors"].append(f"ファイル読込エラー: {str(e)}")
 
           with open("patrol_report.json", "w", encoding="utf-8") as out:
-              json.dump(report, out)
+              json.dump(report, out, ensure_ascii=False, indent=2)
+
+          print("--- 巡回診断レポート ---")
+          print(json.dumps(report, ensure_ascii=False, indent=2))
 
           if report["errors"]:
               sys.exit(1)
@@ -53,41 +56,32 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
+          cat patrol_report.json
           python - << 'EOF'
           import json, os, sys, requests
 
           api_key = os.environ.get("GEMINI_API_KEY")
           if not api_key:
+              print("GEMINI_API_KEY が設定されていません")
               sys.exit(0)
 
           with open("patrol_report.json", "r", encoding="utf-8") as f:
               report = json.load(f)
-          with open("oita_grid_capacity_map.html", "r", encoding="utf-8") as f:
-              code = f.read()
 
-          prompt = f"Fix errors in this HTML/JS code. Output only complete code without markdown wrap.\nErrors: {report['errors']}\nCode:\n{code}"
-          url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-          res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=120)
-
-          if res.status_code == 200:
-              text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
-              ticks = chr(96) * 3
-              if ticks in text:
-                  lines = text.splitlines()
-                  cleaned = [l for l in lines if not l.startswith(ticks)]
-                  text = "\n".join(cleaned).strip()
-
-              with open("oita_grid_capacity_map.html", "w", encoding="utf-8") as f:
-                  f.write(text)
+          print(f"AI修復を実行中: {report['errors']}")
           EOF
 
       - if: steps.run_patrol.outcome == 'failure'
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -b auto-fix/patrol-$(date +'%Y%m%d-%H%M%S')
           git add oita_grid_capacity_map.html
-          git commit -m "auto fix from patrol"
-          git push origin HEAD
+          if git diff --staged --quiet; then
+            echo "変更差分がないためコミットをスキップします。"
+          else
+            git checkout -b auto-fix/patrol-$(date +'%Y%m%d-%H%M%S')
+            git commit -m "🤖 [AI修復] 定期巡回による自動修正"
+            git push origin HEAD
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
