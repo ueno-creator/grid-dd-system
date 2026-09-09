@@ -4,7 +4,7 @@ on:
   schedule:
     # 毎朝 6:00 JST (UTC 21:00) に自動巡回
     - cron: '0 21 * * *'
-  workflow_dispatch: # 管理画面から今すぐ実行も可能
+  workflow_dispatch: # 管理画面から手動実行も可能
 
 jobs:
   patrol-and-heal:
@@ -32,7 +32,7 @@ jobs:
         continue-on-error: true
         run: |
           python - << 'EOF' > patrol_report.json
-          import re, json, sys, requests
+          import re, json, sys
 
           report = {"status": "success", "errors": []}
           try:
@@ -71,21 +71,22 @@ jobs:
           with open("oita_grid_capacity_map.html", "r", encoding="utf-8") as f:
               code = f.read()
 
-          prompt = f"以下のエラーを修復したHTMLコードのみを出力してください。\nエラー: {report['errors']}\nコード:\n{code}"
+          prompt = f"以下のエラーを修復した完全なHTMLコードのみを出力してください。マークダウン等の解説は不要です。\nエラー: {report['errors']}\n対象コード:\n{code}"
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
           res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=120)
+
           if res.status_code == 200:
               text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
-              if "
-```html" in text:
-                  text = text.split("
-```html")[1].split("```")[0].strip()
-              elif "
-```" in text:
-                  text = text.split("
-```")[1].split("```")[0].strip()
+              # マークダウンのコードブロック囲いを除去
+              ticks = chr(96) * 3
+              if ticks in text:
+                  lines = text.splitlines()
+                  cleaned = [l for l in lines if not l.startswith(ticks)]
+                  text = "\n".join(cleaned).strip()
+
               with open("oita_grid_capacity_map.html", "w", encoding="utf-8") as f:
                   f.write(text)
+              print("修復完了")
           EOF
 
       - name: 修正パッチの自動コミット・プッシュ
