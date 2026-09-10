@@ -1,0 +1,133 @@
+name: "AI Auto Developer & Deployer"
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  develop-and-deploy:
+    runs-on: ubuntu-latest
+    if: "!startsWith(github.event.issue.title, '[Bot]')"
+    steps:
+      - name: リポジトリの取得
+        uses: actions/checkout@v4
+
+      - name: Pythonのセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 依存ライブラリのインストール
+        run: pip install requests
+
+      - name: Gemini AIプログラマーによる自動改修
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          python - << 'PYEOF'
+          import os
+          import sys
+          import json
+          import re
+          import requests
+
+          api_key = os.environ.get("GEMINI_API_KEY")
+          if not api_key:
+              print("❌ GEMINI_API_KEY が未設定です。")
+              sys.exit(1)
+
+          issue_title = os.environ.get("ISSUE_TITLE", "")
+          issue_body = os.environ.get("ISSUE_BODY", "")
+          user_request = f"タイトル: {issue_title}\n詳細: {issue_body}"
+
+          html_path = "index.html"
+          if not os.path.exists(html_path):
+              if os.path.exists("oita_grid_capacity_map.html"):
+                  html_path = "oita_grid_capacity_map.html"
+
+          with open(html_path, "r", encoding="utf-8") as f:
+              current_code = f.read()
+
+          system_prompt = """
+          あなたは電力系統・用地DDシステムのシニアフルスタックエンジニアです。
+          ユーザーから機能追加や改善の要望が届きます。
+          提供された既存のHTML/CSS/JSコード（単一ファイル）を解析し、要望を完璧に実装した完全なHTMLコードを出力してください。
+          
+          【制約事項】
+          1. 既存の変電所データ、地図機能、計算ロジックを壊さないこと。
+          2. 必ず<!DOCTYPE html>から</html>までの完全なコードを出力すること。
+          3. 出力はMarkdownのコードブロック（
+```html ... ```）で囲むこと。
+          """
+
+          prompt = f"""
+          【ユーザーからの機能追加・改善リクエスト】
+          {user_request}
+
+          【現在のHTMLコード】
+          {current_code}
+          """
+
+          url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+          payload = {
+              "contents": [{"parts": [{"text": prompt}]}],
+              "systemInstruction": {"parts": [{"text": system_prompt}]}
+          }
+
+          print("🤖 Gemini AIがコードを改修中...")
+          res = requests.post(url, json=payload, headers={"Content-Type": "application/json"})
+          if res.status_code != 200:
+              print(f"❌ Gemini API Error: {res.text}")
+              sys.exit(1)
+
+          data = res.json()
+          try:
+              new_text = data["candidates"][0]["content"]["parts"][0]["text"]
+              match = re.search(r"
+```html\s*([\s\S]*?)\s*```", new_text)
+              final_code = match.group(1) if match else new_text.strip()
+              
+              if "<!DOCTYPE html>" in final_code or "<html" in final_code:
+                  with open("index.html", "w", encoding="utf-8") as f:
+                      f.write(final_code)
+                  with open("oita_grid_capacity_map.html", "w", encoding="utf-8") as f:
+                      f.write(final_code)
+                  print("✅ index.html の自動更新に成功しました！")
+              else:
+                  print("⚠️ HTML形式ではありませんでした。")
+                  sys.exit(1)
+          except Exception as e:
+              print(f"❌ エラー: {e}")
+              sys.exit(1)
+          PYEOF
+
+      - name: 変更のコミットと自動デプロイ
+        run: |
+          git config --global user.name "AI-Auto-Developer[bot]"
+          git config --global user.email "ai-developer@users.noreply.github.com"
+          git add index.html oita_grid_capacity_map.html
+          git commit -m "🤖 [AI Auto Dev] #${{ github.event.issue.number }}: ${{ github.event.issue.title }}" || exit 0
+          git push origin main
+
+      - name: Issueへ完了通知を書き込む
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '🚀 **AIによる自動改修とWebサイトへのデプロイが完了しました！**\n\n約1分後に [公開サイト](https://ueno-creator.github.io/grid-dd-system/) を再読み込み（Command + Shift + R）してご確認ください。'
+            });
+            github.rest.issues.update({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'closed'
+            });
